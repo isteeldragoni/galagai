@@ -283,8 +283,18 @@ class Play(State):
 
     def next_stage(self):
         self.stage_num += 1
+        self.the_stage = True
 
         # TODO: add enemies
+        # Spawn a grid of enemies
+        for row in range(3):
+            for col in range(8):
+                # Calculate position based on grid
+                x = 80 + (col * 32)
+                y = 100 + (row * 32)
+                           
+                enemy = sprites.Enemy(x, y, 'test')
+                self.enemies.add(enemy)
 
         self.update_stage_badges()
         self.start_animating_stage_badges()

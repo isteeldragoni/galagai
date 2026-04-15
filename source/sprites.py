@@ -86,7 +86,7 @@ class Enemy(GalagaSprite):
         return 0
 
     def display(self, surface: pygame.Surface):
-        frame_num = get_frame()
+        frame_num = self.get_frame()
         x, y, w, h = self.FRAMES[self.enemy_type][frame_num]
         self.image = grab_sheet(x, y, w, h)
         super(Enemy, self).display(surface)
