@@ -39,11 +39,16 @@ def get_state(play_state):
 # --- NATHAN: Reward and Logging ---
 def calculate_reward(play_state, prev_score, is_alive):
     if not is_alive:
-        return -100.0  # Death penalty
+        return -100.0 # Penalty for dying
     
-    reward = 0.1       # Survival bonus
+    reward = 0.1 # Small survival bonus per frame
+    
+    # Penalty for staying in the right corner exploit
+    if play_state.player and play_state.player.x > c.GAME_SIZE.width - 25:
+        reward -= 0.2
+
     if play_state.score > prev_score:
-        reward += 10.0 # Hit reward
+        reward += 10.0 # Reward for hitting an enemy
     return reward
 
 def log_progress(episode, total_reward, score):
@@ -57,21 +62,33 @@ def log_progress(episode, total_reward, score):
 
 # --- INTERFACE: Connecting AI to Pygame ---
 def apply_action(game, action):
-    # Map 0: Left, 1: Right, 2: Shoot
+    # Action 0: Left, 1: Right, 2: Shoot
     keys = {pygame.K_LEFT: False, pygame.K_RIGHT: False, pygame.K_SPACE: False}
-    
-    if action == 0: keys[pygame.K_LEFT] = True
-    elif action == 1: keys[pygame.K_RIGHT] = True
+    if action == 0: 
+        keys[pygame.K_LEFT] = True
+    elif action == 1: 
+        keys[pygame.K_RIGHT] = True
     elif action == 2: 
         keys[pygame.K_SPACE] = True
-        game.fighter_shoots() # Explicitly call the shoot method
+        # Use the correct method name from play.py
+        game.fighter_shoots() 
+    
+        current_time = pygame.time.get_ticks() 
         
-    # Step the game logic forward by 1 frame (33ms)
-    game.update(33, keys)
+        # Only fire if the cooldown (200ms) has passed
+        if current_time >= (game.last_fire_time + 200):
+            game.fighter_shoots() 
+            game.last_fire_time = current_time # Update the last fire timestamp
+    
+    game.update(16, keys)
 
 # --- TRAINING LOOP ---
 def train():
-    # Setup the persistence data the Play state requires
+    pygame.init()
+    screen = pygame.display.set_mode(c.GAME_SIZE)
+    pygame.display.set_caption("Galaga AI Training")
+
+    # 1. Setup persistence data
     dummy_persist = c.Persist(
         stars=StarField(), 
         scores=[], 
@@ -83,45 +100,76 @@ def train():
         stage_num=1
     )
 
+    # 2. INITIALIZE MODEL AND OPTIMIZER (Fixes NameError)
     state_size = 2 # [player_x, enemy_dist]
     action_size = 3 # [left, right, shoot]
-    
     model = DQN(state_size, action_size)
     optimizer = optim.Adam(model.parameters(), lr=0.001)
     
+    # 3. Exploration variables
+    epsilon = 0.3      
+    epsilon_decay = 0.995
+    gamma = 0.99       
+
     print("Starting AI Training...")
 
     for episode in range(1000):
         game = Play(dummy_persist)
-        game.done_starting() # Skip the "Ready" timers
-        
+        game.done_starting()
         total_reward = 0
         done = False
 
         while not done:
-            # 1. Capture current state and score
-            old_score = game.score
+            # Keep window from freezing
+            for event in pygame.event.get():
+                if event.type == pygame.QUIT: 
+                    pygame.quit()
+                    return
+
             state = get_state(game)
+            old_score = game.score
             
-            # 2. AI decides action
-            with torch.no_grad():
-                q_values = model(state)
-                action = torch.argmax(q_values).item()
+            # Decide action with Epsilon-Greedy
+            if np.random.rand() < epsilon:
+                action = np.random.randint(0, 3)
+            else:
+                with torch.no_grad():
+                    # 'model' is now defined above
+                    action = torch.argmax(model(state)).item()
             
-            # 3. Apply action to the game
             apply_action(game, action)
-            
-            # 4. Calculate reward
+            next_state = get_state(game)
             reward = calculate_reward(game, old_score, game.is_player_alive)
             total_reward += reward
 
-            # 5. Check for game over
+            # 4. THE LEARNING STEP
+            current_q = model(state)[action]
+            with torch.no_grad():
+                max_next_q = torch.max(model(next_state)) if game.is_player_alive else 0
+                # Wrap in torch.tensor to avoid the 'float' attribute error
+                target_q = torch.tensor(reward + (gamma * max_next_q), dtype=torch.float32)
+
+            loss = F.mse_loss(current_q, target_q)
+            optimizer.zero_grad()
+            loss.backward()
+            optimizer.step()
+
+            # 5. Visual Updates (Fixes black window)
+            game.display(screen)
+            pygame.display.flip()
+
             if not game.is_player_alive or game.score > 50000:
                 done = True
         
+        # Decay epsilon so it gets smarter over time
+        epsilon = max(0.01, epsilon * epsilon_decay)
         log_progress(episode, total_reward, game.score)
+        
         if episode % 10 == 0:
-            print(f"Episode {episode} | Score: {game.score} | Reward: {total_reward:.2f}")
+            print(f"Episode {episode} | Score: {game.score} | Reward: {total_reward:.2f} | Eps: {epsilon:.2f}")
+
+    # Save the trained brain
+    torch.save(model.state_dict(), "galaga_dqn.pth")
 
 if __name__ == "__main__":
     pygame.init()

@@ -4,7 +4,7 @@ from . import constants as c, tools, setup, hud, scoring, sprites
 from .setup import play_sound, stop_sounds
 from .stars import StarField
 from .tools import calc_stage_badges, draw_text
-from .states import State, draw_mid_text
+from .states import State, draw_mid_text, GAME_OVER_DURATION
 
 # Play state timings
 STAGE_DURATION = 1600
@@ -156,6 +156,11 @@ class Play(State):
         self.update_player(delta_time, keys)
         self.update_enemies(delta_time)
 
+        if self.is_player_alive and self.player:
+            hit_list = pygame.sprite.spritecollide(self.player, self.enemies, False)
+            if hit_list:
+                self.kill_player()
+
         # Less important graphical things to update
         self.update_text_sprites(delta_time)
         self.update_explosions(delta_time)
@@ -168,6 +173,14 @@ class Play(State):
         if self.the_stage and self.enemies:
             self.enemies.update(delta_time, self.animation_flag)
 
+        if self.the_stage and len(self.enemies) == 0 and not self.is_starting and not self.should_show_ready:
+            self.next_stage()
+            self.should_show_stage = True
+            self.blocking_timer = 0
+            
+
+    
+
     def add_explosion(self, x, y, is_player_type=False):
         self.explosions.add(sprites.Explosion(x, y, is_player_type=is_player_type))
 
@@ -175,28 +188,34 @@ class Play(State):
         for a_missile in self.missiles.sprites():
             a_missile.update(delta_time, self.animation_flag)
 
-            # Only work on the first enemy hit
             for enemy in self.enemies:
                 if not enemy.is_visible:
                     continue
+                
                 if enemy.rect.colliderect(a_missile.rect):
                     enemy.kill()
                     a_missile.kill()
                     self.num_hits += 1
                     self.add_explosion(enemy.x, enemy.y)
                     play_sound("enemy_hit_1")
+                    
                     points = 0
-                    if isinstance(enemy, sprites.Bee):
+                    if enemy.enemy_type == 'bee':
                         points = 400
-                    elif isinstance(enemy, sprites.Butterfly):
+                    elif enemy.enemy_type == 'butterfly':
                         points = 400
-                    elif isinstance(enemy, sprites.Purple):
+                    elif enemy.enemy_type == 'purple':
                         points = 800
                         sprites.ScoreText(enemy.x, enemy.y, points)
+                    
                     self.score += points
-                    self.high_score = max(self.score, self.high_score)
-                    if not STAGE_BOUNDS.contains(a_missile.rect):
-                        a_missile.kill()
+                    # Now this works because Persist is a class, not a namedtuple
+                    self.persist.one_up_score = self.score 
+                    self.persist.current_score = self.score
+                    
+                    if self.score > self.high_score:
+                        self.high_score = self.score
+                        self.persist.high_score = self.high_score                    
                     break
 
     def kill_player(self):
@@ -283,17 +302,21 @@ class Play(State):
 
     def next_stage(self):
         self.stage_num += 1
+        self.persist.stage_num = self.stage_num
         self.the_stage = True
+        import random
+        available_types = ['bee', 'butterfly', 'purple']
 
         # TODO: add enemies
         # Spawn a grid of enemies
         for row in range(3):
             for col in range(8):
                 # Calculate position based on grid
-                x = 80 + (col * 32)
-                y = 100 + (row * 32)
-                           
-                enemy = sprites.Enemy(x, y, 'test')
+                x = 48 + (col * 18)
+                y = 60 + (row * 24)
+
+                chosen_type = random.choice(available_types)           
+                enemy = sprites.Enemy(x, y, chosen_type)
                 self.enemies.add(enemy)
 
         self.update_stage_badges()

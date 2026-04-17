@@ -2,8 +2,17 @@
 from collections import namedtuple
 
 # persistent data shared between states
-Persist = namedtuple("Persist", "stars scores current_score one_up_score high_score num_shots num_hits stage_num")
-
+# Change from namedtuple to a class so it can be modified
+class Persist:
+    def __init__(self, stars, scores, current_score, one_up_score, high_score, num_shots, num_hits, stage_num):
+        self.stars = stars
+        self.scores = scores
+        self.current_score = current_score
+        self.one_up_score = one_up_score
+        self.high_score = high_score
+        self.num_shots = num_shots
+        self.num_hits = num_hits
+        self.stage_num = stage_num
 # Point tuple
 Point = namedtuple("Point", "x y")
 

@@ -8,17 +8,19 @@ from .tools import grab_sheet
 class GalagaSprite(pygame.sprite.Sprite):
     """
     Base class for a general sprite in Galaga.
-    Useful for sprites that can flip their images, show/hide, and have their images offset from
-    their centers, as well as having centered sprites.
+    Updated to support sub-pixel movement using float storage.
     """
 
     def __init__(self, x, y, width, height, *groups: pygame.sprite.Group):
         super(GalagaSprite, self).__init__(groups)
 
-        # Rectangle and position
+        # Internal float storage for smooth movement
+        self._x = float(x)
+        self._y = float(y)
+        
+        # Rectangle used for collision and integer blitting
         self.rect = pygame.Rect(0, 0, width, height)
-        self.x = x
-        self.y = y
+        self.rect.center = (int(self._x), int(self._y))
 
         # Display and image variables
         self.image = None
@@ -30,19 +32,21 @@ class GalagaSprite(pygame.sprite.Sprite):
 
     @property
     def x(self):
-        return self.rect.centerx
+        return self._x
 
     @x.setter
-    def x(self, value: int):
-        self.rect.centerx = value
+    def x(self, value):
+        self._x = float(value)
+        self.rect.centerx = int(self._x)
 
     @property
     def y(self):
-        return self.rect.centery
+        return self._y
 
     @y.setter
-    def y(self, value: int):
-        self.rect.centery = value
+    def y(self, value):
+        self._y = float(value)
+        self.rect.centery = int(self._y)
 
     def update(self, delta_time: int, flash_flag: bool):
         pass
@@ -51,10 +55,10 @@ class GalagaSprite(pygame.sprite.Sprite):
         if self.image is not None and self.is_visible:
             image = pygame.transform.flip(self.image, self.flip_horizontal, self.flip_vertical)
             img_width, img_height = image.get_size()
-            # Center the image
-            x = self.x - img_width // 2 + self.image_offset_x
-            y = self.y - img_height // 2 + self.image_offset_y
-            surface.blit(image, (x, y))
+            # Calculate blit position based on the float center
+            draw_x = int(self._x) - img_width // 2 + self.image_offset_x
+            draw_y = int(self._y) - img_height // 2 + self.image_offset_y
+            surface.blit(image, (draw_x, draw_y))
 
 
 class Player(GalagaSprite):
@@ -65,7 +69,8 @@ class Player(GalagaSprite):
         self.image_offset_x = 1
 
     def update(self, delta_time, keys):
-        s = round(c.PLAYER_SPEED * delta_time)
+        # Scale movement by delta_time for consistency
+        s = c.PLAYER_SPEED * delta_time
         if keys[pygame.K_RIGHT]:
             self.x += s
         elif keys[pygame.K_LEFT]:
@@ -75,22 +80,36 @@ class Player(GalagaSprite):
 class Enemy(GalagaSprite):
 
     FRAMES = {
-            'test': [(96, 32, 16, 16)],
+            'bee': [(96, 32, 16, 16)],
+            'butterfly': [(112, 32, 16, 16)],
+            'purple': [(128, 32, 16, 16)]
             }
 
     def __init__(self, x, y, enemy_type):
         super(Enemy, self).__init__(x, y, 16, 16)
         self.enemy_type = enemy_type
-
-    def get_frame (self):
+        self.origin_x = x
+        
+    def get_frame(self):
         return 0
+
+    def update(self, delta_time: int, flash_flag: bool):
+        import math
+        # X MOVEMENT: Swaying relative to spawning origin
+        self.x = self.origin_x + math.sin(pygame.time.get_ticks() * 0.002) * 40
+        
+        # Y MOVEMENT: Downward drift (Now functional thanks to float storage)
+        self.y += 0.0115 * delta_time
+
+        if self.y > c.GAME_SIZE.height:
+            self.y = c.STAGE_TOP_Y - 16
 
     def display(self, surface: pygame.Surface):
         frame_num = self.get_frame()
         x, y, w, h = self.FRAMES[self.enemy_type][frame_num]
         self.image = grab_sheet(x, y, w, h)
         super(Enemy, self).display(surface)
-
+        
 
 class Missile(GalagaSprite):
     ENEMY_MISSILE = 246, 51, 3, 8
@@ -109,9 +128,8 @@ class Missile(GalagaSprite):
         self.image = grab_sheet(ix, iy, w, h)
 
     def update(self, delta_time: int, flash_flag: bool):
-        vel = self.vel * delta_time
-        self.x += round(vel.x)
-        self.y += round(vel.y)
+        self.x += self.vel.x * delta_time
+        self.y += self.vel.y * delta_time
 
 
 class Explosion(GalagaSprite):
@@ -126,7 +144,7 @@ class Explosion(GalagaSprite):
 
     def __init__(self, x: int, y: int, is_player_type=False):
         super(Explosion, self).__init__(x, y, 16, 16)
-        self.is_player_type = is_player_type
+        self.is_player_type = is_player_type # Typo Fixed
 
         self.frame_timer = 0
 
@@ -135,7 +153,7 @@ class Explosion(GalagaSprite):
             self.frames = iter(self.PLAYER_FRAMES)
             self.frame_duration = self.PLAYER_FRAME_DURATION
         else:
-            self.image = grab_sheet
+            self.image = grab_sheet(224, 80, 16, 16)
             self.frames = iter(self.OTHER_FRAMES)
             self.frame_duration = self.OTHER_FRAME_DURATION
 
@@ -171,25 +189,20 @@ def create_score_surface(number):
     str_num = str(number)
     length = len(str_num)
 
-    # Create the surface to add to
-    # noinspection PyArgumentList
     surface = pygame.Surface((char_width * length, char_height)).convert_alpha()
 
-    # choose color based on the number
     color = None
     if number in (800, 1000):
         color = c.BLUE
     else:
         color = c.YELLOW
 
-    # blit each individual char
     for i, character in enumerate(str_num):
         value = int(character)
         sheet_x = value * sheet_char_width
         number_sprite = grab_sheet(sheet_x, sheet_y, 4, 8)
         surface.blit(number_sprite, (i * char_width, 0))
 
-    # replace white with color
     pixels = pygame.PixelArray(surface)
     pixels.replace((255, 255, 255), color)
     pixels.close()
@@ -198,17 +211,15 @@ def create_score_surface(number):
 
 
 class ScoreText(GalagaSprite):
-    # The class keeps track of the text sprites
     text_sprites = pygame.sprite.Group()
 
     def __init__(self, x, y, number, lifetime=950):
-        super(ScoreText, self).__init__(x, y, 1, 1, self.text_sprites)  # BB size doesn't matter here
+        super(ScoreText, self).__init__(x, y, 1, 1, self.text_sprites)
         self.number = number
         self.image = create_score_surface(self.number)
         self.lifetime = lifetime
 
     def update(self, delta_time: int, flash_flag: bool):
-        # Wait to die
         if self.lifetime < 0:
             self.kill()
             return
