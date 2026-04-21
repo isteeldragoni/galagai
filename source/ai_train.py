@@ -45,10 +45,12 @@ def calculate_reward(play_state, prev_score, is_alive):
     
     # Penalty for staying in the right corner exploit
     if play_state.player and play_state.player.x > c.GAME_SIZE.width - 25:
-        reward -= 0.2
+        reward -= 0.5
+    else:
+        reward += 0.2
 
     if play_state.score > prev_score:
-        reward += 10.0 # Reward for hitting an enemy
+        reward += 15.0 # Reward for hitting an enemy
     return reward
 
 def log_progress(episode, total_reward, score):
@@ -70,8 +72,7 @@ def apply_action(game, action):
         keys[pygame.K_RIGHT] = True
     elif action == 2: 
         keys[pygame.K_SPACE] = True
-        # Use the correct method name from play.py
-        game.fighter_shoots() 
+        # Use the correct method name from play.py 
     
         current_time = pygame.time.get_ticks() 
         
