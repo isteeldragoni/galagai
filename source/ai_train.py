@@ -53,10 +53,11 @@ def get_state(play_state):
 
 # --- NATHAN: Reward and Logging ---
 def calculate_reward(play_state, prev_score, is_alive):
+    reward = 0
     if not is_alive:
         return -100.0 # Penalty for dying
 
-    reward = 0.1 # Small survival bonus per frame
+    reward += 0.1 # Small survival bonus per frame
 
     # Penalty for staying in the right corner exploit
     # Brennan: according to the reinforcement learning model in the second textbook, equalizing the reward against unwanted behavior should offset it
@@ -87,15 +88,12 @@ def apply_action(game, action):
         keys[pygame.K_RIGHT] = True
     elif action == 2:
         keys[pygame.K_SPACE] = True
-<<<<<<< HEAD
         # Use the correct method name from play.py 
     
         current_time = pygame.time.get_ticks() 
         
-=======
         current_time = pygame.time.get_ticks()
 
->>>>>>> 2c7d0ef999598165214ae351dcfe18b273676060
         # Only fire if the cooldown (200ms) has passed
         if current_time >= (game.last_fire_time + 200):
             game.fighter_shoots()
