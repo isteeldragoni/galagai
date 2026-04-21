@@ -59,10 +59,11 @@ def calculate_reward(play_state, prev_score, is_alive):
     reward = 0.1 # Small survival bonus per frame
 
     # Penalty for staying in the right corner exploit
+    # Brennan: according to the reinforcement learning model in the second textbook, equalizing the reward against unwanted behavior should offset it
     if play_state.player and play_state.player.x > c.GAME_SIZE.width - 25:
         reward -= 0.5
     else:
-        reward += 0.2
+        reward += 0.5
 
     if play_state.score > prev_score:
         reward += 15.0 # Reward for hitting an enemy
