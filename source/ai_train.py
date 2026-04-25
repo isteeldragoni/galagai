@@ -39,35 +39,64 @@ class ReplayMemory:
         return len(self.memory)
 
 # --- BRENNAN: State Representation ---
-def get_state(play_state):
-    # Normalize Player X (0.0 to 1.0)
-    p_x = play_state.player.x / c.GAME_SIZE.width if play_state.player else 0.5
+def get_state(play_state, prev_x=None):
+    if not play_state.player:
+        return torch.FloatTensor([0.5, 0.0, 1.0, 0.0])
 
-    # Track nearest enemy distance
-    enemy_dist = 1.0
+    p_x = play_state.player.x / c.GAME_SIZE.width
+    
+    # 1. Movement: Did we actually move since last time? 
+    # (normalized roughly -1.0 to 1.0)
+    movement = (play_state.player.x - prev_x) / 10.0 if prev_x is not None else 0.0
+    
+    # 2. Wall Closeness: 0.0 at center, 1.0 at absolute edges
+    wall_closeness = abs(p_x - 0.5) * 2.0
+
+    enemy_dist_y = 1.0
+    rel_x = 0.0
+    
     if play_state.enemies:
         nearest = min(play_state.enemies, key=lambda e: e.y)
-        enemy_dist = nearest.y / c.GAME_SIZE.height
+        enemy_dist_y = nearest.y / c.GAME_SIZE.height
+        rel_x = (nearest.x - play_state.player.x) / c.GAME_SIZE.width
 
-    return torch.FloatTensor([p_x, enemy_dist])
+    # state_size = 4
+    return torch.FloatTensor([movement, wall_closeness, enemy_dist_y, rel_x])
 
 # --- NATHAN: Reward and Logging ---
-def calculate_reward(play_state, prev_score, is_alive):
-    reward = 0
+def calculate_reward(play_state, prev_score, is_alive, edge_timer, dist_traveled):
     if not is_alive:
-        return -100.0 # Penalty for dying
+        return -5.0
 
-    reward += 0.1 # Small survival bonus per frame
+    reward = 0.0
+    p_x = play_state.player.x if play_state.player else c.GAME_SIZE.width / 2
 
-    # Penalty for staying in the right corner exploit
-    # Brennan: according to the reinforcement learning model in the second textbook, equalizing the reward against unwanted behavior should offset it
-    if play_state.player and play_state.player.x > c.GAME_SIZE.width - 25:
-        reward -= 0.5
-    else:
+    # --- THE "MOVE OR DIE" RULE ---
+    # If it has been more than 3 seconds (180 frames) and 
+    # it hasn't traveled at least 20% of the screen width...
+    if edge_timer > 180 and dist_traveled < (c.GAME_SIZE.width * 0.2):
+        reward -= 2.0  # Heavy penalty for staying in one "sector"
+
+    # --- CONDITIONAL SURVIVAL ---
+    # Only reward staying alive if NOT hugging the wall
+    if 60 < p_x < c.GAME_SIZE.width - 60:
         reward += 0.5
+    else:
+        # Escalating penalty for staying at the edge
+        # After 60 frames (1 second), this starts hurting bad
+        penalty_multiplier = max(0, (edge_timer - 60) / 60.0)
+        reward -= (0.3 * penalty_multiplier)
 
+    # --- TRACKING REWARD ---
+    if play_state.enemies:
+        nearest = min(play_state.enemies, key=lambda e: e.y)
+        dist_x = abs(p_x - nearest.x) / c.GAME_SIZE.width
+        reward += (1.0 - dist_x) * 0.5
+
+    # --- THE BIG PAYDAY ---
     if play_state.score > prev_score:
-        reward += 15.0 # Reward for hitting an enemy
+        reward += 25.0
+        
     return reward
 
 def log_progress(episode, total_reward, score):
@@ -108,27 +137,26 @@ def train():
     pygame.display.set_caption("Galaga AI Training")
 
     # 1. Hyperparameters & Setup
-    state_size = 2 # [player_x, enemy_dist]
-    action_size = 3 # [left, right, shoot]
+    state_size = 4 # [movement, wall_closeness, enemy_dist_y, rel_x]
+    action_size = 3 
     batch_size = 64
     gamma = 0.99
-    target_update_freq = 10 # Update target net every 10 episodes
+    target_update_freq = 10 
     
     # 2. Initialize Models
     policy_net = DQN(state_size, action_size)
     target_net = DQN(state_size, action_size)
     target_net.load_state_dict(policy_net.state_dict())
-    target_net.eval() # Target net is not trained directly
+    target_net.eval() 
     
-    optimizer = optim.Adam(policy_net.parameters(), lr=0.001)
+    optimizer = optim.Adam(policy_net.parameters(), lr=0.0005) # Slightly lower LR for stability
     memory = ReplayMemory(10000)
 
     # 3. Exploration variables
-    epsilon = 0.3
-    epsilon_decay = 0.995
-    epsilon_min = 0.01
+    epsilon = 1.0
+    epsilon_decay = 0.998 # Slow decay to force curiosity
+    epsilon_min = 0.1
 
-    # Persistence data
     dummy_persist = c.Persist(
         stars=StarField(),
         scores=[],
@@ -146,8 +174,13 @@ def train():
         game = Play(dummy_persist)
         game.done_starting()
         total_reward = 0
+        edge_timer = 0 # <--- NEW: Track how long we are at the edge
+        start_x_pos = game.player.x if game.player else 0
         done = False
-        state = get_state(game)
+        
+        # Initial prev_x for the very first state
+        
+        state = get_state(game, 0)
 
         while not done:
             for event in pygame.event.get():
@@ -155,30 +188,43 @@ def train():
                     pygame.quit()
                     return
 
-            # Decide action with Epsilon-Greedy
+            # Decide action
             if random.random() < epsilon:
                 action = random.randint(0, action_size - 1)
             else:
                 with torch.no_grad():
                     action = policy_net(state.unsqueeze(0)).argmax().item()
             
+            # --- TRACKING BEFORE ACTION ---
+            dist_traveled = 0
             old_score = game.score
+            prev_x = game.player.x if game.player else 0
+            
             apply_action(game, action)
             
-            next_state = get_state(game)
-            reward = calculate_reward(game, old_score, game.is_player_alive)
-            is_terminal = not game.is_player_alive
+            # --- UPDATE EDGE TIMER ---
+            # If player is within 50 pixels of either side
+            if game.player and (game.player.x < 100 or game.player.x > c.GAME_SIZE.width - 100):
+                edge_timer += 1
+                dist_traveled = abs(game.player.x - start_x_pos)
+            else:
+                edge_timer = 0 # Reset if they move to the middle
+                star_x_pos = game.player.x if game.player else 0
+                dist_traveld = 0
             
-            # Store transition in Replay Memory
+            # --- GET NEXT STATE & REWARD ---
+            next_state = get_state(game, prev_x) # <--- Pass prev_x here
+            reward = calculate_reward(game, old_score, game.is_player_alive, edge_timer, dist_traveled) 
+            
+            is_terminal = not game.is_player_alive
             memory.push(state, action, reward, next_state, is_terminal)
             
             state = next_state
             total_reward += reward
 
-            # 4. THE LEARNING STEP (Batch Training)
+            # 4. THE LEARNING STEP
             if len(memory) > batch_size:
                 transitions = memory.sample(batch_size)
-                # Transpose the batch (see https://pytorch.org/tutorials/intermediate/reinforcement_q_learning.html)
                 batch_state, batch_action, batch_reward, batch_next_state, batch_done = zip(*transitions)
 
                 batch_state = torch.stack(batch_state)
@@ -187,10 +233,8 @@ def train():
                 batch_next_state = torch.stack(batch_next_state)
                 batch_done = torch.tensor(batch_done, dtype=torch.float32)
 
-                # Get current Q-values for actions taken
                 current_q = policy_net(batch_state).gather(1, batch_action)
 
-                # Compute the expected Q-values from target network
                 with torch.no_grad():
                     max_next_q = target_net(batch_next_state).max(1)[0]
                     target_q = batch_reward + (gamma * max_next_q * (1 - batch_done))
@@ -219,7 +263,6 @@ def train():
         if episode % 10 == 0:
             print(f"Episode {episode} | Score: {game.score} | Reward: {total_reward:.2f} | Eps: {epsilon:.2f}")
 
-    # Save the trained brain
     torch.save(policy_net.state_dict(), "galaga_dqn.pth")
 
 if __name__ == "__main__":
